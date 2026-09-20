@@ -1,0 +1,215 @@
+name: OrangeFox X6885
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orangefox-x6885-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FOX_TOP: ${{ github.workspace }}/fox_12.1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Checkout X6885 device tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          path: device-tree
+
+      - name: Free disk space
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Setup swap
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Check runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== DISK ==="
+          df -h "$GITHUB_WORKSPACE"
+
+          echo
+          echo "=== MEMORY ==="
+          free -h
+
+          echo
+          echo "=== SWAP ==="
+          swapon --show
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            cpio \
+            curl \
+            flex \
+            g++-multilib \
+            gcc-multilib \
+            git \
+            gnupg \
+            gperf \
+            lib32ncurses-dev \
+            lib32readline-dev \
+            lib32z1-dev \
+            libelf-dev \
+            liblz4-tool \
+            libncurses-dev \
+            libssl-dev \
+            libxml2 \
+            libxml2-utils \
+            lz4 \
+            openjdk-17-jdk-headless \
+            python-is-python3 \
+            python3 \
+            ripgrep \
+            rsync \
+            squashfs-tools \
+            unzip \
+            xsltproc \
+            zip \
+            zlib1g-dev \
+            device-tree-compiler
+
+          sudo apt-get clean
+
+          java_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+          echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
+
+      - name: Install repo tool
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$HOME/bin"
+
+          curl --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+
+          chmod +x "$HOME/bin/repo"
+
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+          "$HOME/bin/repo" --version
+
+      - name: Configure git
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git config --global protocol.file.allow always
+
+      - name: Sync OrangeFox 12.1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone \
+            --depth=1 \
+            https://gitlab.com/OrangeFox/sync.git \
+            "$HOME/OrangeFox_sync"
+
+          "$HOME/OrangeFox_sync/orangefox_sync.sh" \
+            --branch 12.1 \
+            --path "$FOX_TOP"
+
+      - name: Install X6885 device tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p \
+            "$FOX_TOP/device/infinix/X6885"
+
+          rsync -a \
+            --delete \
+            --exclude='.git/' \
+            "$GITHUB_WORKSPACE/device-tree/" \
+            "$FOX_TOP/device/infinix/X6885/"
+
+      - name: Build OrangeFox X6885
+        shell: bash
+        working-directory: ${{ env.FOX_TOP }}
+        env:
+          ALLOW_MISSING_DEPENDENCIES: 'true'
+          OF_LOW_MEMORY_BUILD: '1'
+          GOMEMLIMIT: '3GiB'
+          GOGC: '20'
+          _JAVA_OPTIONS: '-Xmx3g'
+          USE_CCACHE: '0'
+        run: |
+          set -euo pipefail
+
+          build_jobs="$(nproc)"
+
+          echo "Using ${build_jobs} build jobs"
+
+          source build/envsetup.sh
+
+          lunch ofox_X6885-bp2a-eng
+
+          mka vendorbootimage -j"${build_jobs}" 2>&1 | \
+            tee "$GITHUB_WORKSPACE/orangefox-build.log"
+
+      - name: Validate build output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OUT="$FOX_TOP/out/target/product/X6885"
+
+          echo "=== OUTPUT ==="
+          ls -lh "$OUT"
+
+          test -f "$OUT/vendor_boot.img"
+          test -f "$OUT/ramdisk-recovery.cpio.lz4"
+
+          echo
+          echo "=== vendor_boot.img ==="
+          ls -lh "$OUT/vendor_boot.img"
+
+          echo
+          echo "=== ramdisk-recovery.cpio.lz4 ==="
+          ls -lh "$OUT/ramdisk-recovery.cpio.lz4"
+
+          echo
+          echo "=== SHA256 ==="
+
+          sha256sum \
+            "$OUT/vendor_boot.img" \
+            "$OUT/ramdisk-recovery.cpio.lz4"
+
+      - name: Upload OrangeFox X6885 artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeFox-X6885
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            fox_12.1/out/target/product/X6885/vendor_boot.img
+            fox_12.1/out/target/product/X6885/ramdisk-recovery.cpio.lz4
+            orangefox-build.log
