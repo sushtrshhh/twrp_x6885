@@ -20,25 +20,33 @@ jobs:
 
     steps:
 
-      - name: Checkout X6885 device tree
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          path: device-tree
-
+      # ============================================================
+      # FREE DISK SPACE
+      # ============================================================
       - name: Free disk space
         uses: rokibhasansagar/slimhub_actions@main
 
+      # ============================================================
+      # SETUP SWAP
+      # ============================================================
       - name: Setup swap
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 12
 
+      # ============================================================
+      # CHECK RUNNER CAPACITY
+      # ============================================================
       - name: Check runner capacity
         shell: bash
         run: |
           set -euo pipefail
 
+          echo "=========================================="
+          echo "           RUNNER CAPACITY"
+          echo "=========================================="
+
+          echo
           echo "=== DISK ==="
           df -h "$GITHUB_WORKSPACE"
 
@@ -50,6 +58,25 @@ jobs:
           echo "=== SWAP ==="
           swapon --show
 
+          echo
+          echo "=== CPU ==="
+          nproc
+
+          echo
+          echo "=========================================="
+
+      # ============================================================
+      # CHECKOUT X6885 DEVICE TREE
+      # ============================================================
+      - name: Checkout X6885 device tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          path: device-tree
+
+      # ============================================================
+      # INSTALL BUILD DEPENDENCIES
+      # ============================================================
       - name: Install dependencies
         shell: bash
         run: |
@@ -94,8 +121,16 @@ jobs:
           sudo apt-get clean
 
           java_home="$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")"
+
           echo "JAVA_HOME=${java_home}" >> "$GITHUB_ENV"
 
+          echo
+          echo "=== JAVA ==="
+          java -version
+
+      # ============================================================
+      # INSTALL REPO TOOL
+      # ============================================================
       - name: Install repo tool
         shell: bash
         run: |
@@ -116,16 +151,31 @@ jobs:
 
           "$HOME/bin/repo" --version
 
+      # ============================================================
+      # CONFIGURE GIT
+      # ============================================================
       - name: Configure git
+        shell: bash
         run: |
+          set -euo pipefail
+
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
           git config --global protocol.file.allow always
 
+      # ============================================================
+      # SYNC ORANGEFOX 12.1
+      # ============================================================
       - name: Sync OrangeFox 12.1
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "=========================================="
+          echo "       SYNC ORANGEFOX 12.1"
+          echo "=========================================="
+
+          rm -rf "$HOME/OrangeFox_sync"
 
           git clone \
             --depth=1 \
@@ -138,20 +188,87 @@ jobs:
             --branch 12.1 \
             --path "$FOX_TOP"
 
+          echo
+          echo "OrangeFox sync completed."
+
+          test -d "$FOX_TOP"
+          test -f "$FOX_TOP/build/envsetup.sh"
+
+      # ============================================================
+      # INSTALL X6885 DEVICE TREE
+      # ============================================================
       - name: Install X6885 device tree
         shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p \
-            "$FOX_TOP/device/infinix/X6885"
+          SRC="$GITHUB_WORKSPACE/device-tree"
+          DST="$FOX_TOP/device/infinix/X6885"
 
+          echo "=========================================="
+          echo "      INSTALL X6885 DEVICE TREE"
+          echo "=========================================="
+
+          echo
+          echo "Source:"
+          echo "$SRC"
+
+          echo
+          echo "Destination:"
+          echo "$DST"
+
+          # --------------------------------------------------------
+          # Verify source
+          # --------------------------------------------------------
+          test -d "$SRC"
+          test -f "$SRC/vendorsetup.sh"
+          test -f "$SRC/BoardConfig.mk"
+          test -f "$SRC/AndroidProducts.mk"
+
+          # --------------------------------------------------------
+          # Create destination
+          # --------------------------------------------------------
+          mkdir -p "$DST"
+
+          # --------------------------------------------------------
+          # Copy device tree
+          # No --delete because destination was just created.
+          # --------------------------------------------------------
           rsync -a \
-            --delete \
             --exclude='.git/' \
-            "$GITHUB_WORKSPACE/device-tree/" \
-            "$FOX_TOP/device/infinix/X6885/"
+            "$SRC/" \
+            "$DST/"
 
+          # --------------------------------------------------------
+          # Verify destination
+          # --------------------------------------------------------
+          test -f "$DST/vendorsetup.sh"
+          test -f "$DST/BoardConfig.mk"
+          test -f "$DST/AndroidProducts.mk"
+          test -f "$DST/ofox_X6885.mk"
+
+          echo
+          echo "=== DEVICE TREE ==="
+          ls -la "$DST"
+
+          echo
+          echo "=== VENDORSETUP ==="
+          ls -l "$DST/vendorsetup.sh"
+
+          echo
+          echo "=== BOARD CONFIG ==="
+          ls -l "$DST/BoardConfig.mk"
+
+          echo
+          echo "=== PRODUCT FILE ==="
+          ls -l "$DST/ofox_X6885.mk"
+
+          echo
+          echo "Device tree installed successfully."
+
+      # ============================================================
+      # BUILD ORANGEFOX X6885
+      # ============================================================
       - name: Build OrangeFox X6885
         shell: bash
         working-directory: ${{ env.FOX_TOP }}
@@ -162,20 +279,83 @@ jobs:
           GOGC: '20'
           _JAVA_OPTIONS: '-Xmx3g'
           USE_CCACHE: '0'
+
         run: |
-          set -euo pipefail
+          # IMPORTANT:
+          # Do NOT use "set -u" here.
+          # Android build/envsetup.sh expects some variables
+          # to be unset during initialization.
+
+          set -eo pipefail
+
+          echo "=========================================="
+          echo "        BUILD ORANGEFOX X6885"
+          echo "=========================================="
 
           build_jobs="$(nproc)"
 
+          echo
           echo "Using ${build_jobs} build jobs"
 
+          echo
+          echo "=== WORKING DIRECTORY ==="
+          pwd
+
+          echo
+          echo "=== PRE-BUILD CHECKS ==="
+
+          test -f build/envsetup.sh
+          test -f device/infinix/X6885/vendorsetup.sh
+          test -f device/infinix/X6885/BoardConfig.mk
+          test -f device/infinix/X6885/ofox_X6885.mk
+
+          echo "build/envsetup.sh: OK"
+          echo "vendorsetup.sh: OK"
+          echo "BoardConfig.mk: OK"
+          echo "ofox_X6885.mk: OK"
+
+          echo
+          echo "TOP before envsetup: ${TOP:-<unset>}"
+
+          # --------------------------------------------------------
+          # Initialize Android build environment
+          # --------------------------------------------------------
           source build/envsetup.sh
 
+          echo
+          echo "TOP after envsetup: ${TOP:-<unset>}"
+
+          # --------------------------------------------------------
+          # Lunch X6885 OrangeFox target
+          # --------------------------------------------------------
           lunch ofox_X6885-bp2a-eng
 
+          echo
+          echo "=== BUILD VARIABLES ==="
+          echo "TARGET_PRODUCT=${TARGET_PRODUCT:-<unset>}"
+          echo "TARGET_BUILD_VARIANT=${TARGET_BUILD_VARIANT:-<unset>}"
+          echo "TARGET_ARCH=${TARGET_ARCH:-<unset>}"
+          echo "FOX_BUILD_DEVICE=${FOX_BUILD_DEVICE:-<unset>}"
+
+          echo
+          echo "=========================================="
+          echo "        STARTING VENDOR_BOOT BUILD"
+          echo "=========================================="
+
+          # --------------------------------------------------------
+          # Build vendor_boot
+          # --------------------------------------------------------
           mka vendorbootimage -j"${build_jobs}" 2>&1 | \
             tee "$GITHUB_WORKSPACE/orangefox-build.log"
 
+          echo
+          echo "=========================================="
+          echo "        VENDOR_BOOT BUILD FINISHED"
+          echo "=========================================="
+
+      # ============================================================
+      # VALIDATE BUILD OUTPUT
+      # ============================================================
       - name: Validate build output
         shell: bash
         run: |
@@ -183,9 +363,19 @@ jobs:
 
           OUT="$FOX_TOP/out/target/product/X6885"
 
-          echo "=== OUTPUT ==="
-          ls -lh "$OUT"
+          echo "=========================================="
+          echo "          VALIDATE BUILD OUTPUT"
+          echo "=========================================="
 
+          test -d "$OUT"
+
+          echo
+          echo "=== OUTPUT DIRECTORY ==="
+          ls -lah "$OUT"
+
+          # --------------------------------------------------------
+          # Required artifacts
+          # --------------------------------------------------------
           test -f "$OUT/vendor_boot.img"
           test -f "$OUT/ramdisk-recovery.cpio.lz4"
 
@@ -204,6 +394,12 @@ jobs:
             "$OUT/vendor_boot.img" \
             "$OUT/ramdisk-recovery.cpio.lz4"
 
+          echo
+          echo "Build artifacts validated successfully."
+
+      # ============================================================
+      # UPLOAD ARTIFACTS
+      # ============================================================
       - name: Upload OrangeFox X6885 artifacts
         if: success()
         uses: actions/upload-artifact@v4
