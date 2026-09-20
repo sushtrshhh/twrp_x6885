@@ -3,9 +3,6 @@
 # Device: Transsion (Infinix) MT6789, vendor_boot header v4, Virtual A/B, FBE
 # Lunch combo must match PRODUCT_NAME in ofox_X6885.mk
 
-add_lunch_combo ofox_X6885-bp2a-eng
-add_lunch_combo ofox_X6885-bp2a-userdebug
-
 # Device identity (without this the vars below are ignored)
 export FOX_BUILD_DEVICE=X6885
 export TARGET_ARCH=arm64
